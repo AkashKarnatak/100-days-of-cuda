@@ -1,16 +1,27 @@
-#include <cstdint>
-#include <cstdlib>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 
-double diff;
-struct timespec start_time, end_time;
+struct timer {
+  struct timespec start_time, end_time;
+};
 
-double time_diff(struct timespec end_time, struct timespec start_time) {
-  double diff = (end_time.tv_sec - start_time.tv_sec) +
-                (end_time.tv_nsec - start_time.tv_nsec) / 1000000000.0;
+void start_timer(struct timer *t) {
+  clock_gettime(CLOCK_MONOTONIC, &t->start_time);
+}
+
+void stop_timer(struct timer *t) {
+  clock_gettime(CLOCK_MONOTONIC, &t->end_time);
+}
+
+double time_diff(struct timer *t) {
+  double diff = (t->end_time.tv_sec - t->start_time.tv_sec) +
+                (t->end_time.tv_nsec - t->start_time.tv_nsec) / 1000000000.0;
   return diff;
 }
+
+struct timer t;
 
 void vec_add_cpu(int32_t *x, int32_t *y, int32_t *z, int32_t N) {
   for (uint32_t i = 0; i < N; ++i) {
@@ -30,16 +41,15 @@ void vec_add_gpu(int32_t *x, int32_t *y, int32_t *z, int32_t N) {
   int32_t *x_d, *y_d, *z_d;
 
   // allocate memory
-  clock_gettime(CLOCK_MONOTONIC, &start_time);
+  start_timer(&t);
   cudaMalloc(&x_d, N * sizeof(int32_t));
   cudaMalloc(&y_d, N * sizeof(int32_t));
   cudaMalloc(&z_d, N * sizeof(int32_t));
 
   // copy vector to GPU
   cudaMemcpy(x_d, x, N, cudaMemcpyHostToDevice);
-  clock_gettime(CLOCK_MONOTONIC, &end_time);
-  diff = time_diff(end_time, start_time);
-  printf("CPU to GPU copy time: %f\n", diff);
+  stop_timer(&t);
+  printf("CPU to GPU copy time: %f\n", time_diff(&t));
 
   // perform addition
   numThreads = 512;
@@ -70,19 +80,17 @@ int32_t main() {
   }
 
   // cpu
-  clock_gettime(CLOCK_MONOTONIC, &start_time);
+  start_timer(&t);
   vec_add_cpu(x, y, z, N);
-  clock_gettime(CLOCK_MONOTONIC, &end_time);
-  diff = time_diff(end_time, start_time);
-  printf("CPU time: %f\n", diff);
+  stop_timer(&t);
+  printf("CPU time: %f\n", time_diff(&t));
 
   // gpu
-  clock_gettime(CLOCK_MONOTONIC, &start_time);
+  start_timer(&t);
   vec_add_gpu(x, y, z, N);
   cudaDeviceSynchronize();
-  clock_gettime(CLOCK_MONOTONIC, &end_time);
-  diff = time_diff(end_time, start_time);
-  printf("GPU time: %f\n", diff);
+  stop_timer(&t);
+  printf("GPU time: %f\n", time_diff(&t));
 
   free(x);
   free(y);
