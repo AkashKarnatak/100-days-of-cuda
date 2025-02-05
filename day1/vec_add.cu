@@ -47,7 +47,7 @@ void vec_add_gpu(int32_t *x, int32_t *y, int32_t *z, int32_t N) {
   cudaMalloc(&z_d, N * sizeof(int32_t));
 
   // copy vector to GPU
-  cudaMemcpy(x_d, x, N, cudaMemcpyHostToDevice);
+  cudaMemcpy(x_d, x, N * sizeof(int32_t), cudaMemcpyHostToDevice);
   stop_timer(&t);
   printf("CPU to GPU copy time: %f\n", time_diff(&t));
 
@@ -57,7 +57,7 @@ void vec_add_gpu(int32_t *x, int32_t *y, int32_t *z, int32_t N) {
   vecadd_kernel<<<numBlocks, numThreads>>>(x_d, y_d, z_d, N);
 
   // copy result to CPU
-  cudaMemcpy(z, z_d, N, cudaMemcpyDeviceToHost);
+  cudaMemcpy(z, z_d, N * sizeof(int32_t), cudaMemcpyDeviceToHost);
 
   // free memory
   cudaFree(x_d);
