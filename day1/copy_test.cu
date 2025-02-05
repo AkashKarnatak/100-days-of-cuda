@@ -34,9 +34,7 @@ int32_t main() {
 
   start_timer(&t);
   int32_t *x_h = (int32_t *)malloc(N * sizeof(int32_t));
-  for (int32_t i = 0; i < N; ++i) {
-    x_h[i] = x[i];
-  }
+  cudaMemcpy(x_h, x, N, cudaMemcpyHostToHost);
   stop_timer(&t);
   printf("CPU to CPU copy time: %f\n", time_diff(&t));
 
