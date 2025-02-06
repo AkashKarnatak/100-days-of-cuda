@@ -33,16 +33,29 @@ int32_t main() {
   }
 
   start_timer(&t);
-  int32_t *x_h = (int32_t *)malloc(N * sizeof(int32_t));
-  cudaMemcpy(x_h, x, N, cudaMemcpyHostToHost);
+  int32_t *x_h;
+  x_h = (int32_t *)malloc(N * sizeof(int32_t));
+  memcpy(x_h, x, N * sizeof(int32_t));
   stop_timer(&t);
   printf("CPU to CPU copy time: %f\n", time_diff(&t));
 
-  int32_t *x_d;
   start_timer(&t);
-  cudaMalloc(&x_d, N);
-  cudaMemcpy(x_d, x, N, cudaMemcpyHostToDevice);
+  int32_t *x_d;
+  cudaMalloc(&x_d, N * sizeof(int32_t));
+  cudaMemcpy(x_d, x, N * sizeof(int32_t), cudaMemcpyHostToDevice);
   cudaDeviceSynchronize();
   stop_timer(&t);
   printf("CPU to GPU copy time: %f\n", time_diff(&t));
+
+  // whatever i put second takes more time, idk why
+  // so ig, cudaMemcpy = cudaHostRegister + cudaMemcpy + cudaHostUnregister
+  start_timer(&t);
+  int32_t *x_p;
+  cudaMalloc(&x_p, N * sizeof(int32_t));
+  cudaHostRegister(&x, N * sizeof(int32_t), cudaHostRegisterDefault);
+  cudaMemcpy(x_p, x, N * sizeof(int32_t), cudaMemcpyHostToDevice);
+  cudaHostUnregister(x_p);
+  cudaDeviceSynchronize();
+  stop_timer(&t);
+  printf("CPU to GPU copy time(manual pinning): %f\n", time_diff(&t));
 }
