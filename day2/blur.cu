@@ -10,9 +10,10 @@ __host__ __device__ struct pixel blur(uint32_t row, uint32_t col,
                                       struct pixel *img, uint32_t width,
                                       uint32_t height) {
   uint32_t r = 0, g = 0, b = 0;
-  for (int32_t inRow = row - BLUR_RADIUS; inRow <= row + BLUR_RADIUS; ++inRow) {
-    for (int32_t inCol = col - BLUR_RADIUS; inCol <= col + BLUR_RADIUS;
-         ++inCol) {
+  for (int32_t inRow = row - BLUR_RADIUS; inRow <= (int32_t)(row + BLUR_RADIUS);
+       ++inRow) {
+    for (int32_t inCol = col - BLUR_RADIUS;
+         inCol <= (int32_t)(col + BLUR_RADIUS); ++inCol) {
       if (inRow >= 0 && inRow < height && inCol >= 0 && inCol < width) {
         uint32_t idx = inRow * width + inCol;
         r += img[idx].r, g += img[idx].g, b += img[idx].b;
