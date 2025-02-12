@@ -189,7 +189,8 @@ bool all_close(float *A, float *B, uint32_t M, uint32_t N) {
   for (uint32_t row = 0; row < M; ++row) {
     for (uint32_t col = 0; col < N; ++col) {
       if (abs(A[row * N + col] - B[row * N + col]) > 1e-3) {
-        printf("Mismatch at (%d, %d): A = %f, B = %f\n", row, col, A[row * N + col], B[row * N + col]);
+        printf("Mismatch at (%d, %d): A = %f, B = %f\n", row, col,
+               A[row * N + col], B[row * N + col]);
         return false;
       }
     }
