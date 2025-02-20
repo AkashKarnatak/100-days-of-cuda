@@ -119,7 +119,7 @@ __global__ void online_softmax_kernel(float *in_data, float *out_data, size_t N,
 //   }
 // }
 
-__global__ void tiled_softmax_kernel(float *in_data, float *out_data, size_t N,
+__global__ void block_reduction_softmax_kernel(float *in_data, float *out_data, size_t N,
                                      size_t M) {
   size_t row = blockIdx.x;
 
@@ -235,7 +235,7 @@ void online_softmax_gpu(float *in_data, float *out_data, size_t N, size_t M) {
   cudaFree(out_data_d);
 }
 
-void tiled_softmax_gpu(float *in_data, float *out_data, size_t N, size_t M) {
+void block_reduction_softmax_gpu(float *in_data, float *out_data, size_t N, size_t M) {
   float *in_data_d, *out_data_d;
 
   // allocate memory on GPU
@@ -250,10 +250,10 @@ void tiled_softmax_gpu(float *in_data, float *out_data, size_t N, size_t M) {
   size_t numBlocks = N;
   start_timer(&t);
   cudaDeviceSynchronize();
-  tiled_softmax_kernel<<<numBlocks, numThreads>>>(in_data_d, out_data_d, N, M);
+  block_reduction_softmax_kernel<<<numBlocks, numThreads>>>(in_data_d, out_data_d, N, M);
   cudaDeviceSynchronize();
   stop_timer(&t);
-  printf("GPU time(tiled): %f\n", time_diff(&t));
+  printf("GPU time (Block reduction): %f\n", time_diff(&t));
 
   // copy data from device to host
   cudaMemcpy(out_data, out_data_d, N * M * sizeof(float),
@@ -327,9 +327,9 @@ int32_t main() {
   printf("CPU and GPU match (Online): %s\n",
          allclose(out_data_cpu, out_data_gpu, N * M) ? "true" : "false");
 
-  tiled_softmax_gpu(in_data, out_data_gpu, N, M);
+  block_reduction_softmax_gpu(in_data, out_data_gpu, N, M);
 
-  printf("CPU and GPU match (Tiled): %s\n",
+  printf("CPU and GPU match (Block Reduction): %s\n",
          allclose(out_data_cpu, out_data_gpu, N * M) ? "true" : "false");
 
   return 0;
