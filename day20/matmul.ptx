@@ -1,0 +1,115 @@
+.version 8.6
+.target sm_86
+
+.entry matmul_ptx (
+  .param .u64 A,
+  .param .u64 B,
+  .param .u64 C,
+  .param .u32 N,
+  .param .u32 K,
+  .param .u32 M
+) {
+  /*
+  size_t row = blockDim.y * blockDim.y + threadIdx.y;
+  size_t col = blockDim.x * blockDim.x + threadIdx.x;
+
+  if (row >= N || col >= M)
+    return;
+
+  float sum = 0.0f;
+  for (size_t i = 0; i < K; ++i) {
+    sum += A[row * M + i] * B[i * M + col];
+  }
+  C[row * M + col] = sum;
+  */
+  // declare register
+  .reg .u64 %A, %B, %C;
+  .reg .u32 %N, %K, %M;
+  .reg .u32 %row, %col;
+  .reg .u64 %offset;
+  .reg .u32 %reg; // general purpose u32 reg
+  .reg .f32 %A_data, %B_data, %sum; // generall purpose f32 reg
+  .reg .pred %pred1, %pred2; // general purpose predicate reg
+
+  // load matrix size
+  ld.param.u32 %N, [N];
+  ld.param.u32 %K, [K];
+  ld.param.u32 %M, [M];
+
+  // %row = %ctaid.y * %ntid.y + %tid.y
+  // %col = %ctaid.x * %ntid.x + %tid.x
+
+  // calculate row
+  mov.u32 %row, %ctaid.y;
+  mov.u32 %reg, %ntid.y;
+  mul.lo.u32 %row, %row, %reg;
+  mov.u32 %reg, %tid.y;
+  add.u32 %row, %row, %reg;
+
+  // calculate col
+  mov.u32 %col, %ctaid.x;
+  mov.u32 %reg, %ntid.x;
+  mul.lo.u32 %col, %col, %reg;
+  mov.u32 %reg, %tid.x;
+  add.u32 %col, %col, %reg;
+
+  // (row >= N || col >= M)
+
+  // calculate out of bound condition
+  setp.ge.u32 %pred1, %row, %N;
+  setp.ge.u32 %pred2, %col, %M;
+  or.pred %pred1, %pred1, %pred2;
+
+  // exit if out of bound
+  @%pred1 bra EXIT;
+
+  // load matrix addresses
+  ld.param.u64 %A, [A];
+  ld.param.u64 %B, [B];
+  ld.param.u64 %C, [C];
+
+  .reg .u32 %i;
+  mov.u32 %i, 0;
+  mov.f32 %sum, 0.0;
+  // for (size_t i = 0; i < K; ++i)
+  // A[row * M + i]
+loop_start:
+  setp.lt.u32 %pred1, %i, %K;
+  @!%pred1 bra loop_end;
+
+  // load A[row * M + i]
+  mul.lo.u32 %reg, %row, %M;
+  add.u32 %reg, %reg, %i;
+  cvt.u64.u32 %offset, %reg;
+  mul.lo.u64 %offset, %offset, 4;
+  add.u64 %A, %A, %offset;
+  ld.global.f32 %A_data, [%A];
+
+  // load B[i * M + col]
+  mul.lo.u32 %reg, %i, %M;
+  add.u32 %reg, %reg, %col;
+  cvt.u64.u32 %offset, %reg;
+  mul.lo.u64 %offset, %offset, 4;
+  add.u64 %B, %B, %offset;
+  ld.global.f32 %B_data, [%B];
+
+  // calculate sum += A[row * M + i] * B[i * M + col]
+  mul.f32 %A_data, %A_data, %B_data;
+  add.f32 %sum, %sum, %A_data; 
+
+  add.u32 %i, %i, 1;
+  bra loop_start;
+loop_end:
+
+  // store sum in C[row * M + col]
+  mov.u32 %reg, %row;
+  mul.lo.u32 %reg, %reg, %M;
+  add.u32 %reg, %reg, %col;
+  cvt.u64.u32 %offset, %reg;
+  mul.lo.u64 %offset, %offset, 4;
+  add.u64 %C, %C, %offset;
+  st.global.f32 [%C], %sum;
+
+EXIT:
+  ret;
+}
