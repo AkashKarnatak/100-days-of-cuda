@@ -23,8 +23,13 @@ __global__ void flash_attention_kernel(float *query, float *key, float *value,
 
     // load Kj, Vj
     for (size_t k = 0; k < d; ++k) {
-      K[tid * d + k] = key[(j * Bc + tid) * d + k];
-      V[tid * d + k] = value[(j * Bc + tid) * d + k];
+      if (j * Bc + tid < N) {
+        K[tid * d + k] = key[(j * Bc + tid) * d + k];
+        V[tid * d + k] = value[(j * Bc + tid) * d + k];
+      } else {
+        K[tid * d + k] = -INFINITY;
+        V[tid * d + k] = 0;
+      }
     }
 
     __syncthreads();
@@ -33,16 +38,26 @@ __global__ void flash_attention_kernel(float *query, float *key, float *value,
       // load Q, O, m, l
       if (tid < Br) {
         for (size_t k = 0; k < d; ++k) {
-          Q[tid * d + k] = query[(i * Br + tid) * d + k];
-          O[tid * d + k] = output[(i * Br + tid) * d + k];
+          if (i * Br + tid < N) {
+            Q[tid * d + k] = query[(i * Br + tid) * d + k];
+            O[tid * d + k] = output[(i * Br + tid) * d + k];
+          } else {
+            Q[tid * d + k] = -INFINITY;
+            O[tid * d + k] = 0;
+          }
         }
-        l[tid] = sums[i * Br + tid];
-        m[tid] = maxes[i * Br + tid];
+        if (i * Br + tid < N) {
+          l[tid] = sums[i * Br + tid];
+          m[tid] = maxes[i * Br + tid];
+        } else {
+          l[tid] = 0;
+          m[tid] = -INFINITY;
+        }
       }
 
       __syncthreads();
 
-      if (tid >= Br)
+      if (tid >= Br || i * Br + tid >= N)
         continue;
 
       float m_, l_, m_new, l_new;
@@ -81,12 +96,13 @@ __global__ void flash_attention_kernel(float *query, float *key, float *value,
   }
 }
 
+extern "C" {
 void flash_attention_gpu(float *query, float *key, float *value, float *output,
                          float *sums, float *maxes, size_t N, size_t d) {
   size_t Br, Bc, Tr, Tc;
   float *query_d, *key_d, *value_d, *output_d, *sums_d, *maxes_d;
 
-  Br = 2, Bc = 4;
+  Br = 16, Bc = 16;
   Tr = cdiv(N, Br), Tc = cdiv(N, Bc);
 
   cudaMalloc(&query_d, (N * d) * sizeof(float));
@@ -119,6 +135,7 @@ void flash_attention_gpu(float *query, float *key, float *value, float *output,
   cudaFree(output_d);
   cudaFree(sums_d);
   cudaFree(maxes_d);
+}
 }
 
 int main() {
