@@ -24,7 +24,7 @@ __global__ void flash_attention_kernel(float *query, float *key, float *value,
         K[tid * d + k] = key[(j * Bc + tid) * d + k];
         V[tid * d + k] = value[(j * Bc + tid) * d + k];
       } else {
-        K[tid * d + k] = -INFINITY;
+        K[tid * d + k] = 0;
         V[tid * d + k] = 0;
       }
     }
@@ -38,7 +38,7 @@ __global__ void flash_attention_kernel(float *query, float *key, float *value,
           if (i * Br + tid < N) {
             Q[tid * d + k] = query[(i * Br + tid) * d + k];
           } else {
-            Q[tid * d + k] = -INFINITY;
+            Q[tid * d + k] = 0;
           }
         }
       }
@@ -58,7 +58,10 @@ __global__ void flash_attention_kernel(float *query, float *key, float *value,
         for (size_t k = 0; k < d; ++k) {
           sum += Q[tid * d + k] * K[col * d + k];
         }
-        S[tid * Bc + col] = sum / sqrtf(d);
+        if (j * Bc + col < N)
+          S[tid * Bc + col] = sum / sqrtf(d);
+        else
+          S[tid * Bc + col] = -INFINITY;
         m_curr = fmaxf(m_curr, sum / sqrtf(d));
       }
 
@@ -115,8 +118,8 @@ void flash_attention_gpu(float *query, float *key, float *value, float *output,
                     + Bc * d  // K
                     + Bc * d  // V
                     + Br * Bc // S
-                    )
-                   * sizeof(float);
+                    ) *
+                   sizeof(float);
   flash_attention_kernel<<<numBlocks, numThreads, sramMem>>>(
       query_d, key_d, value_d, output_d, sums_d, maxes_d, N, d, Br, Bc, Tr, Tc);
   cudaError_t err = cudaGetLastError(); // Check for launch errors
