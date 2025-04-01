@@ -161,6 +161,85 @@ __global__ void softmax_shfl_kernel(float *in_data, float *out_data, size_t N,
   }
 }
 
+__device__ __forceinline__ float warpReduceMax(float val) {
+#pragma unroll
+  for (size_t s = warpSize / 2; s > 0; s /= 2) {
+    val = max(val, __shfl_down_sync(0xffffffff, val, s));
+  }
+  return val;
+}
+
+__device__ __forceinline__ float warpReduceSum(float val) {
+#pragma unroll
+  for (size_t s = warpSize / 2; s > 0; s /= 2) {
+    val += __shfl_down_sync(0xffffffff, val, s);
+  }
+  return val;
+}
+
+__global__ void softmax_shfl2_kernel(float *in_data, float *out_data, size_t N,
+                                     size_t M) {
+  size_t tid = threadIdx.x;
+  size_t row = blockIdx.x;
+
+  float local_sum = 0, local_max = -INFINITY;
+  float global_sum, global_max;
+
+  for (size_t i = tid; i < M; i += blockDim.x) {
+    float curr = in_data[row * M + i];
+    if (curr > local_max) {
+      local_sum *= expf(local_max - curr);
+      local_max = curr;
+    }
+    local_sum += expf(curr - local_max);
+  }
+
+  global_max = local_max;
+  global_max = warpReduceMax(global_max);
+
+  size_t warpIdx = tid / warpSize;
+  size_t laneIdx = tid % warpSize;
+
+  __shared__ float sram[32];
+
+  if (laneIdx == 0) {
+    sram[warpIdx] = global_max;
+  }
+  if (tid < warpSize && tid >= cdiv(blockDim.x, warpSize)) {
+    sram[tid] = 0;
+  }
+  __syncthreads();
+
+  if (tid < warpSize)
+    sram[tid] = warpReduceMax(sram[tid]);
+  __syncthreads();
+
+  global_max = sram[0];
+
+  local_sum *= expf(local_max - global_max);
+
+  local_sum = warpReduceSum(local_sum);
+
+  if (laneIdx == 0) {
+    sram[warpIdx] = local_sum;
+  }
+  if (tid < warpSize && tid >= cdiv(blockDim.x, warpSize)) {
+    sram[tid] = 0;
+  }
+  __syncthreads();
+
+  if (tid < warpSize)
+    sram[tid] = warpReduceSum(sram[tid]);
+  __syncthreads();
+
+  global_sum = sram[0];
+
+  for (size_t i = tid; i < M; i += blockDim.x) {
+    out_data[row * M + i] =
+        expf(in_data[row * M + i] - global_max) / global_sum;
+  }
+}
+
 void softmax_gpu(float *in_data, float *out_data, size_t N, size_t M) {
   float *in_data_d, *out_data_d;
 
@@ -206,6 +285,35 @@ void softmax_shfl_gpu(float *in_data, float *out_data, size_t N, size_t M) {
   start_timer(&t);
   cudaDeviceSynchronize();
   softmax_shfl_kernel<<<numBlocks, numThreads>>>(in_data_d, out_data_d, N, M);
+  cudaDeviceSynchronize();
+  stop_timer(&t);
+  printf("GPU time (Block reduction): %f\n", time_diff(&t));
+
+  // copy data from device to host
+  cudaMemcpy(out_data, out_data_d, N * M * sizeof(float),
+             cudaMemcpyDeviceToHost);
+
+  // free memory
+  cudaFree(in_data_d);
+  cudaFree(out_data_d);
+}
+
+void softmax_shfl2_gpu(float *in_data, float *out_data, size_t N, size_t M) {
+  float *in_data_d, *out_data_d;
+
+  // allocate memory on GPU
+  cudaMalloc(&in_data_d, N * M * sizeof(float));
+  cudaMalloc(&out_data_d, N * M * sizeof(float));
+
+  // copy data from host to device
+  cudaMemcpy(in_data_d, in_data, N * M * sizeof(float), cudaMemcpyHostToDevice);
+
+  // perform computation
+  size_t numThreads = 1024;
+  size_t numBlocks = N;
+  start_timer(&t);
+  cudaDeviceSynchronize();
+  softmax_shfl2_kernel<<<numBlocks, numThreads>>>(in_data_d, out_data_d, N, M);
   cudaDeviceSynchronize();
   stop_timer(&t);
   printf("GPU time (Block reduction): %f\n", time_diff(&t));
@@ -273,13 +381,15 @@ int32_t main() {
   softmax_cpu(in_data, out_data_cpu, N, M);
 
   softmax_gpu(in_data, out_data_gpu, N, M);
-
   printf("CPU and GPU match: %s\n",
          allclose(out_data_cpu, out_data_gpu, N * M) ? "true" : "false");
 
   softmax_shfl_gpu(in_data, out_data_gpu, N, M);
-
   printf("CPU and GPU match (Shfl): %s\n",
+         allclose(out_data_cpu, out_data_gpu, N * M) ? "true" : "false");
+
+  softmax_shfl2_gpu(in_data, out_data_gpu, N, M);
+  printf("CPU and GPU match (Shfl2): %s\n",
          allclose(out_data_cpu, out_data_gpu, N * M) ? "true" : "false");
 
   return 0;
