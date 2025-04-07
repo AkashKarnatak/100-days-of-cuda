@@ -123,6 +123,8 @@ __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
   __shared__ float B_s[BK][BM];
 
   float sums[TN * TM] = {0};
+  float A_reg[TN], B_reg[TM];
+
   for (size_t tileOffset = 0; tileOffset < K; tileOffset += BK) {
 
     // load data in shared memory
@@ -149,8 +151,6 @@ __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
     }
 
     __syncthreads();
-
-    float A_reg[TN], B_reg[TM];
 
     // compute
     for (size_t k = 0; k < BK; ++k) {
@@ -182,8 +182,8 @@ __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
           (colCOffset + innerColCOffset + innerColC) < M) {
         C[(rowCOffset + innerRowCOffset + innerRowC) * M + colCOffset +
           innerColCOffset + innerColC] = sums[cnt];
-        ++cnt;
       }
+      ++cnt;
     }
   }
 }
@@ -253,6 +253,7 @@ int main() {
                         cudaMemcpyDeviceToHost));
 
   CUDA_CHECK(cudaDeviceSynchronize());
+  cudaMemset(C_d, 0, N * M * sizeof(float));
   start_timer(&t);
   numThreads = dim3(BLOCK_SIZE * BLOCK_SIZE);
   numBlocks = dim3(cdiv(M, BLOCK_SIZE), cdiv(N, BLOCK_SIZE));
@@ -266,6 +267,7 @@ int main() {
   printf("Match impl: %s\n\n", allclose(C_base, C, N, M) ? "true" : "false");
 
   CUDA_CHECK(cudaDeviceSynchronize());
+  cudaMemset(C_d, 0, N * M * sizeof(float));
   start_timer(&t);
   numThreads = dim3(BLOCK_SIZE * BLOCK_SIZE);
   numBlocks = dim3(cdiv(M, BLOCK_SIZE), cdiv(N, BLOCK_SIZE));
@@ -279,6 +281,7 @@ int main() {
   printf("Match impl: %s\n\n", allclose(C_base, C, N, M) ? "true" : "false");
 
   CUDA_CHECK(cudaDeviceSynchronize());
+  cudaMemset(C_d, 0, N * M * sizeof(float));
   const size_t CN = 32;
   const size_t CM = 16;
   const size_t BK = 8;
@@ -288,7 +291,7 @@ int main() {
          BM * BK >= CN * CM); // number of threads must be less than
   start_timer(&t);
   numThreads = dim3(CN * CM);
-  numBlocks = dim3(cdiv(M, BN), cdiv(N, BM));
+  numBlocks = dim3(cdiv(M, BM), cdiv(N, BN));
   matmul_tiled_2d_kernel<BN, BK, BM, CN, CM>
       <<<numBlocks, numThreads>>>(A_d, B_d, C_d, N, K, M);
   CUDA_CHECK(cudaGetLastError());
