@@ -129,7 +129,7 @@ __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
     for (size_t innerRowAOffset = 0; innerRowAOffset < BN;
          innerRowAOffset += strideA) {
       if ((rowAOffset + innerRowAOffset + innerRowA) < N &&
-          (tileOffset + innerColA) < M)
+          (tileOffset + innerColA) < K)
         A_s[innerRowAOffset + innerRowA][innerColA] =
             A[(rowAOffset + innerRowAOffset + innerRowA) * K + tileOffset +
               innerColA];
@@ -139,7 +139,7 @@ __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
 
     for (size_t innerRowBOffset = 0; innerRowBOffset < BK;
          innerRowBOffset += strideB) {
-      if ((tileOffset + innerRowBOffset + innerRowB) < N &&
+      if ((tileOffset + innerRowBOffset + innerRowB) < K &&
           (colBOffset + innerColB) < M)
         B_s[innerRowBOffset + innerRowB][innerColB] =
             B[(tileOffset + innerRowBOffset + innerRowB) * M + colBOffset +
@@ -178,8 +178,8 @@ __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
        innerRowCOffset += CN) {
     for (size_t innerColCOffset = 0; innerColCOffset < BM;
          innerColCOffset += CM) {
-      if ((innerRowCOffset + innerRowC) < N &&
-          (innerColCOffset + innerColC) < M) {
+      if ((rowCOffset + innerRowCOffset + innerRowC) < N &&
+          (colCOffset + innerColCOffset + innerColC) < M) {
         C[(rowCOffset + innerRowCOffset + innerRowC) * M + colCOffset +
           innerColCOffset + innerColC] = sums[cnt];
         ++cnt;
@@ -282,13 +282,11 @@ int main() {
   const size_t CN = 32;
   const size_t CM = 16;
   const size_t BK = 8;
-  const size_t BN = 64;
+  const size_t BN = 128;
   const size_t BM = 64;
   assert(BN * BK >= CN * CM &&
          BM * BK >= CN * CM); // number of threads must be less than
   start_timer(&t);
-  printf("%lu\n", CN * CM / BK);
-  printf("%lu\n", CN * CM / BM);
   numThreads = dim3(CN * CM);
   numBlocks = dim3(cdiv(M, BN), cdiv(N, BM));
   matmul_tiled_2d_kernel<BN, BK, BM, CN, CM>
