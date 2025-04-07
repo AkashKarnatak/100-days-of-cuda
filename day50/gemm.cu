@@ -1,6 +1,17 @@
+#include <assert.h>
 #include <cublas_v2.h>
 #include <stdio.h>
 #include <time.h>
+
+#define CUDA_CHECK(call)                                                       \
+  do {                                                                         \
+    cudaError_t err = call;                                                    \
+    if (err != cudaSuccess) {                                                  \
+      fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__,         \
+              cudaGetErrorString(err));                                        \
+      exit(1);                                                                 \
+    }                                                                          \
+  } while (0)
 
 __device__ __host__ inline size_t cdiv(size_t a, size_t b) {
   return (a + b - 1) / b;
@@ -86,9 +97,11 @@ __global__ void matmul_tiled_kernel(float *A, float *B, float *C, size_t N,
 }
 
 template <const size_t BN, const size_t BK, const size_t BM, const size_t CN,
-          const size_t CM, const size_t TN, const size_t TM>
+          const size_t CM>
 __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
                                        size_t K, size_t M) {
+  const size_t TN = BN / CN;
+  const size_t TM = BM / CM;
   const size_t rowAOffset = blockIdx.y * BN;
   const size_t colBOffset = blockIdx.x * BM;
   const size_t rowCOffset = rowAOffset;
@@ -109,7 +122,7 @@ __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
   __shared__ float A_s[BN][BK];
   __shared__ float B_s[BK][BM];
 
-  float sums[TN * TN] = {0};
+  float sums[TN * TM] = {0};
   for (size_t tileOffset = 0; tileOffset < K; tileOffset += BK) {
 
     // load data in shared memory
@@ -204,7 +217,6 @@ int main() {
   float *A, *B, *C_base, *C;
   float *A_d, *B_d, *C_base_d, *C_d;
   dim3 numThreads, numBlocks;
-  cudaError_t err;
 
   N = K = M = 4096;
 
@@ -226,78 +238,65 @@ int main() {
     B[i] = (float)rand() / RAND_MAX;
   }
 
-  cudaMemcpy(A_d, A, N * K * sizeof(float), cudaMemcpyHostToDevice);
-  cudaMemcpy(B_d, B, K * M * sizeof(float), cudaMemcpyHostToDevice);
+  CUDA_CHECK(cudaMemcpy(A_d, A, N * K * sizeof(float), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(B_d, B, K * M * sizeof(float), cudaMemcpyHostToDevice));
 
-  cudaDeviceSynchronize();
+  CUDA_CHECK(cudaDeviceSynchronize());
   const size_t BLOCK_SIZE = 32;
   numThreads = dim3(BLOCK_SIZE * BLOCK_SIZE);
   numBlocks = dim3(cdiv(M, BLOCK_SIZE), cdiv(N, BLOCK_SIZE));
   matmul_naive_kernel<BLOCK_SIZE>
       <<<numBlocks, numThreads>>>(A_d, B_d, C_base_d, N, K, M);
-  cudaDeviceSynchronize();
-  err = cudaGetLastError();
-  if (err != cudaSuccess) {
-    printf("CUDA kernel error: %s\n", cudaGetErrorString(err));
-    exit(1);
-  }
-  cudaMemcpy(C_base, C_base_d, N * M * sizeof(float), cudaMemcpyDeviceToHost);
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(cudaMemcpy(C_base, C_base_d, N * M * sizeof(float),
+                        cudaMemcpyDeviceToHost));
 
-  cudaDeviceSynchronize();
+  CUDA_CHECK(cudaDeviceSynchronize());
   start_timer(&t);
   numThreads = dim3(BLOCK_SIZE * BLOCK_SIZE);
   numBlocks = dim3(cdiv(M, BLOCK_SIZE), cdiv(N, BLOCK_SIZE));
   matmul_naive_kernel<BLOCK_SIZE>
       <<<numBlocks, numThreads>>>(A_d, B_d, C_d, N, K, M);
-  cudaDeviceSynchronize();
-  err = cudaGetLastError();
-  if (err != cudaSuccess) {
-    printf("CUDA kernel error: %s\n", cudaGetErrorString(err));
-    exit(1);
-  }
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
   stop_timer(&t);
-  cudaMemcpy(C, C_d, N * M * sizeof(float), cudaMemcpyDeviceToHost);
+  CUDA_CHECK(cudaMemcpy(C, C_d, N * M * sizeof(float), cudaMemcpyDeviceToHost));
   printf("Naive matmul kernel time: %f\n", time_diff(&t));
   printf("Match impl: %s\n\n", allclose(C_base, C, N, M) ? "true" : "false");
 
-  cudaDeviceSynchronize();
+  CUDA_CHECK(cudaDeviceSynchronize());
   start_timer(&t);
   numThreads = dim3(BLOCK_SIZE * BLOCK_SIZE);
   numBlocks = dim3(cdiv(M, BLOCK_SIZE), cdiv(N, BLOCK_SIZE));
   matmul_tiled_kernel<BLOCK_SIZE>
       <<<numBlocks, numThreads>>>(A_d, B_d, C_d, N, K, M);
-  cudaDeviceSynchronize();
-  err = cudaGetLastError();
-  if (err != cudaSuccess) {
-    printf("CUDA kernel error: %s\n", cudaGetErrorString(err));
-    exit(1);
-  }
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
   stop_timer(&t);
-  cudaMemcpy(C, C_d, N * M * sizeof(float), cudaMemcpyDeviceToHost);
+  CUDA_CHECK(cudaMemcpy(C, C_d, N * M * sizeof(float), cudaMemcpyDeviceToHost));
   printf("Tiled matmul kernel time: %f\n", time_diff(&t));
   printf("Match impl: %s\n\n", allclose(C_base, C, N, M) ? "true" : "false");
 
-  cudaDeviceSynchronize();
+  CUDA_CHECK(cudaDeviceSynchronize());
   const size_t CN = 32;
-  const size_t CM = 32;
+  const size_t CM = 16;
   const size_t BK = 8;
   const size_t BN = 64;
   const size_t BM = 64;
-  const size_t TN = BN / CN;
-  const size_t TM = BM / CM;
+  assert(BN * BK >= CN * CM &&
+         BM * BK >= CN * CM); // number of threads must be less than
   start_timer(&t);
+  printf("%lu\n", CN * CM / BK);
+  printf("%lu\n", CN * CM / BM);
   numThreads = dim3(CN * CM);
   numBlocks = dim3(cdiv(M, BN), cdiv(N, BM));
-  matmul_tiled_2d_kernel<BN, BK, BM, CN, CM, TN, TM>
+  matmul_tiled_2d_kernel<BN, BK, BM, CN, CM>
       <<<numBlocks, numThreads>>>(A_d, B_d, C_d, N, K, M);
-  err = cudaGetLastError();
-  if (err != cudaSuccess) {
-    printf("CUDA kernel error: %s\n", cudaGetErrorString(err));
-    exit(1);
-  }
-  cudaDeviceSynchronize();
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
   stop_timer(&t);
-  cudaMemcpy(C, C_d, N * M * sizeof(float), cudaMemcpyDeviceToHost);
+  CUDA_CHECK(cudaMemcpy(C, C_d, N * M * sizeof(float), cudaMemcpyDeviceToHost));
   printf("Tiled 2d matmul kernel time: %f\n", time_diff(&t));
   printf("Match impl: %s\n\n", allclose(C_base, C, N, M) ? "true" : "false");
 
