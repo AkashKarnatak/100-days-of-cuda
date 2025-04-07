@@ -85,8 +85,8 @@ __global__ void matmul_tiled_kernel(float *A, float *B, float *C, size_t N,
     C[row * M + col] = sum;
 }
 
-template <const size_t BN, const size_t BK, const size_t BM,
-          const size_t numWarps, const size_t TN, const size_t TM>
+template <const size_t BN, const size_t BK, const size_t BM, const size_t CN,
+          const size_t CM, const size_t TN, const size_t TM>
 __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
                                        size_t K, size_t M) {
   const size_t rowAOffset = blockIdx.y * BN;
@@ -126,9 +126,9 @@ __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
     // compute
     cnt = 0;
     for (size_t innerRowCOffset = 0; innerRowCOffset < BN;
-         innerRowCOffset += numWarps) {
+         innerRowCOffset += CN) {
       for (size_t innerColCOffset = 0; innerColCOffset < BM;
-           innerColCOffset += warpSize) {
+           innerColCOffset += CM) {
         for (size_t k = 0; k < BK; ++k) {
           sums[cnt] += A_s[innerRowCOffset + innerRowC][k] *
                        B_s[k][innerColCOffset + innerColC];
@@ -141,9 +141,9 @@ __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
 
   cnt = 0;
   for (size_t innerRowCOffset = 0; innerRowCOffset < BN;
-       innerRowCOffset += numWarps) {
+       innerRowCOffset += CN) {
     for (size_t innerColCOffset = 0; innerColCOffset < BM;
-         innerColCOffset += warpSize) {
+         innerColCOffset += CM) {
       if ((innerRowCOffset + innerRowC) < N &&
           (innerColCOffset + innerColC) < M) {
         C[(rowCOffset + innerRowCOffset + innerRowC) * M + colCOffset +
@@ -257,17 +257,17 @@ int main() {
   printf("Match impl: %s\n\n", allclose(C_base, C, N, M) ? "true" : "false");
 
   cudaDeviceSynchronize();
-  const size_t warpSize = 32;
-  const size_t numWarps = 32;
+  const size_t CN = 32;
+  const size_t CM = 32;
   const size_t BK = 8;
-  const size_t BN = numWarps * warpSize / BK;
-  const size_t BM = numWarps * warpSize / BK;
-  const size_t TN = BN / numWarps;
-  const size_t TM = BM / warpSize;
+  const size_t BN = CN * CM / BK;
+  const size_t BM = CN * CM / BK;
+  const size_t TN = BN / CN;
+  const size_t TM = BM / CM;
   start_timer(&t);
-  numThreads = dim3(warpSize * numWarps);
+  numThreads = dim3(CN * CM);
   numBlocks = dim3(cdiv(M, BN), cdiv(N, BM));
-  matmul_tiled_2d_kernel<BN, BK, BM, numWarps, TN, TM>
+  matmul_tiled_2d_kernel<BN, BK, BM, CN, CM, TN, TM>
       <<<numBlocks, numThreads>>>(A_d, B_d, C_d, N, K, M);
   err = cudaGetLastError();
   if (err != cudaSuccess) {
