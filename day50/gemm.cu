@@ -124,16 +124,15 @@ __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
     __syncthreads();
 
     // compute
-    cnt = 0;
-    for (size_t innerRowCOffset = 0; innerRowCOffset < BN;
-         innerRowCOffset += CN) {
-      for (size_t innerColCOffset = 0; innerColCOffset < BM;
-           innerColCOffset += CM) {
-        for (size_t k = 0; k < BK; ++k) {
-          sums[cnt] += A_s[innerRowCOffset + innerRowC][k] *
-                       B_s[k][innerColCOffset + innerColC];
+    for (size_t k = 0; k < BK; ++k) {
+      cnt = 0;
+      for (size_t innerRowCOffset = 0; innerRowCOffset < BN;
+           innerRowCOffset += CN) {
+        float A_s_tmp = A_s[innerRowCOffset + innerRowC][k];
+        for (size_t innerColCOffset = 0; innerColCOffset < BM;
+             innerColCOffset += CM) {
+          sums[cnt++] += A_s_tmp * B_s[k][innerColCOffset + innerColC];
         }
-        ++cnt;
       }
     }
     __syncthreads();
