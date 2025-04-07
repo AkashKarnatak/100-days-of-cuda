@@ -47,10 +47,10 @@ __global__ void matmul_naive_kernel(float *A, float *B, float *C, size_t N,
 template <const size_t BLOCK_SIZE>
 __global__ void matmul_tiled_kernel(float *A, float *B, float *C, size_t N,
                                     size_t K, size_t M) {
-  size_t ty = threadIdx.x / BLOCK_SIZE;
-  size_t tx = threadIdx.x % BLOCK_SIZE;
-  size_t row = blockIdx.y * BLOCK_SIZE + ty;
-  size_t col = blockIdx.x * BLOCK_SIZE + tx;
+  size_t innerRow = threadIdx.x / BLOCK_SIZE;
+  size_t innerCol = threadIdx.x % BLOCK_SIZE;
+  size_t row = blockIdx.y * BLOCK_SIZE + innerRow;
+  size_t col = blockIdx.x * BLOCK_SIZE + innerCol;
 
   if (row >= N && col >= M)
     return;
@@ -61,21 +61,21 @@ __global__ void matmul_tiled_kernel(float *A, float *B, float *C, size_t N,
   float sum = 0.0f;
   for (size_t tileOffset = 0; tileOffset < K; tileOffset += BLOCK_SIZE) {
     // load data in shared memory
-    if (row < N && (tileOffset + tx) < M)
-      A_s[ty][tx] = A[row * K + tileOffset + tx];
+    if (row < N && (tileOffset + innerCol) < M)
+      A_s[innerRow][innerCol] = A[row * K + tileOffset + innerCol];
     else
-      A_s[ty][tx] = 0.0f;
+      A_s[innerRow][innerCol] = 0.0f;
 
-    if ((tileOffset + ty) < N && col < M)
-      B_s[ty][tx] = B[(tileOffset + ty) * M + col];
+    if ((tileOffset + innerRow) < N && col < M)
+      B_s[innerRow][innerCol] = B[(tileOffset + innerRow) * M + col];
     else
-      B_s[ty][tx] = 0.0f;
+      B_s[innerRow][innerCol] = 0.0f;
 
     __syncthreads();
 
     // compute
     for (size_t k = 0; k < BLOCK_SIZE; ++k) {
-      sum += A_s[ty][k] * B_s[k][tx];
+      sum += A_s[innerRow][k] * B_s[k][innerCol];
     }
 
     __syncthreads();
@@ -85,19 +85,21 @@ __global__ void matmul_tiled_kernel(float *A, float *B, float *C, size_t N,
     C[row * M + col] = sum;
 }
 
-template <const size_t BN, const size_t BK, const size_t BM, const size_t TN,
-          const size_t TM>
-__global__ void matmul_tiled_1d_kernel(float *A, float *B, float *C, size_t N,
+template <const size_t BN, const size_t BK, const size_t BM,
+          const size_t numWarps, const size_t TN, const size_t TM>
+__global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
                                        size_t K, size_t M) {
   const size_t rowAOffset = blockIdx.y * BN;
   const size_t colBOffset = blockIdx.x * BM;
+  const size_t rowCOffset = rowAOffset;
+  const size_t colCOffset = colBOffset;
 
   size_t innerColA = threadIdx.x % BK;
-  size_t innerRowA = threadIdx.x % BN;
+  size_t innerRowA = threadIdx.x / BK;
   size_t innerColB = threadIdx.x % BM;
-  size_t innerRowB = threadIdx.x % BM;
-  size_t innerRowC = threadIdx.x % warpSize;
-  size_t innerColC = threadIdx.x / warpSize;
+  size_t innerRowB = threadIdx.x / BM;
+  size_t innerColC = threadIdx.x % warpSize;
+  size_t innerRowC = threadIdx.x / warpSize;
   size_t cnt = 0;
 
   __shared__ float A_s[BN][BK];
@@ -113,9 +115,9 @@ __global__ void matmul_tiled_1d_kernel(float *A, float *B, float *C, size_t N,
     else
       A_s[innerRowA][innerColA] = 0.0f;
 
-    if ((tileOffset + innerRowA) < N && (colBOffset + innerColB) < M)
+    if ((tileOffset + innerRowB) < N && (colBOffset + innerColB) < M)
       B_s[innerRowB][innerColB] =
-          B[(tileOffset + innerRowA) * M + colBOffset + innerColB];
+          B[(tileOffset + innerRowB) * M + colBOffset + innerColB];
     else
       B_s[innerRowB][innerColB] = 0.0f;
 
@@ -124,7 +126,7 @@ __global__ void matmul_tiled_1d_kernel(float *A, float *B, float *C, size_t N,
     // compute
     cnt = 0;
     for (size_t innerRowCOffset = 0; innerRowCOffset < BN;
-         innerRowCOffset += warpSize) {
+         innerRowCOffset += numWarps) {
       for (size_t innerColCOffset = 0; innerColCOffset < BM;
            innerColCOffset += warpSize) {
         for (size_t k = 0; k < BK; ++k) {
@@ -139,13 +141,13 @@ __global__ void matmul_tiled_1d_kernel(float *A, float *B, float *C, size_t N,
 
   cnt = 0;
   for (size_t innerRowCOffset = 0; innerRowCOffset < BN;
-       innerRowCOffset += warpSize) {
+       innerRowCOffset += numWarps) {
     for (size_t innerColCOffset = 0; innerColCOffset < BM;
          innerColCOffset += warpSize) {
       if ((innerRowCOffset + innerRowC) < N &&
           (innerColCOffset + innerColC) < M) {
-        C[(innerRowCOffset + innerRowC) * M + innerColCOffset + innerColC] =
-            sums[cnt];
+        C[(rowCOffset + innerRowCOffset + innerRowC) * M + colCOffset +
+          innerColCOffset + innerColC] = sums[cnt];
         ++cnt;
       }
     }
@@ -239,15 +241,17 @@ int main() {
   printf("Match impl: %s\n\n", allclose(C_base, C, N, M) ? "true" : "false");
 
   cudaDeviceSynchronize();
-  const size_t BN = 1024;
+  const size_t warpSize = 32;
+  const size_t numWarps = 32;
   const size_t BK = 1;
-  const size_t BM = 1024;
-  const size_t TN = BN / 32;
-  const size_t TM = BM / 32;
+  const size_t BN = numWarps * warpSize / BK;
+  const size_t BM = numWarps * warpSize / BK;
+  const size_t TN = BN / numWarps;
+  const size_t TM = BM / warpSize;
   start_timer(&t);
-  numThreads = dim3(BK * 32);
+  numThreads = dim3(warpSize * numWarps);
   numBlocks = dim3(cdiv(M, BN), cdiv(N, BM));
-  matmul_tiled_1d_kernel<BN, BK, BM, TN, TM>
+  matmul_tiled_2d_kernel<BN, BK, BM, numWarps, TN, TM>
       <<<numBlocks, numThreads>>>(A_d, B_d, C_d, N, K, M);
   cudaDeviceSynchronize();
   stop_timer(&t);
