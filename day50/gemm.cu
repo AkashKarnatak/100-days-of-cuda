@@ -94,13 +94,17 @@ __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
   const size_t rowCOffset = rowAOffset;
   const size_t colCOffset = colBOffset;
 
+  size_t cnt = 0;
   size_t innerColA = threadIdx.x % BK;
   size_t innerRowA = threadIdx.x / BK;
   size_t innerColB = threadIdx.x % BM;
   size_t innerRowB = threadIdx.x / BM;
-  size_t innerColC = threadIdx.x % warpSize;
-  size_t innerRowC = threadIdx.x / warpSize;
-  size_t cnt = 0;
+  size_t innerColC = threadIdx.x % CM;
+  size_t innerRowC = threadIdx.x / CM;
+
+  // CN * CM is the number of threads in this block
+  size_t strideA = CN * CM / BK;
+  size_t strideB = CN * CM / BM;
 
   __shared__ float A_s[BN][BK];
   __shared__ float B_s[BK][BM];
@@ -109,29 +113,47 @@ __global__ void matmul_tiled_2d_kernel(float *A, float *B, float *C, size_t N,
   for (size_t tileOffset = 0; tileOffset < K; tileOffset += BK) {
 
     // load data in shared memory
-    if ((rowAOffset + innerRowA) < N && (tileOffset + innerColA) < M)
-      A_s[innerRowA][innerColA] =
-          A[(rowAOffset + innerRowA) * K + tileOffset + innerColA];
-    else
-      A_s[innerRowA][innerColA] = 0.0f;
+    for (size_t innerRowAOffset = 0; innerRowAOffset < BN;
+         innerRowAOffset += strideA) {
+      if ((rowAOffset + innerRowAOffset + innerRowA) < N &&
+          (tileOffset + innerColA) < M)
+        A_s[innerRowAOffset + innerRowA][innerColA] =
+            A[(rowAOffset + innerRowAOffset + innerRowA) * K + tileOffset +
+              innerColA];
+      else
+        A_s[innerRowAOffset + innerRowA][innerColA] = 0.0f;
+    }
 
-    if ((tileOffset + innerRowB) < N && (colBOffset + innerColB) < M)
-      B_s[innerRowB][innerColB] =
-          B[(tileOffset + innerRowB) * M + colBOffset + innerColB];
-    else
-      B_s[innerRowB][innerColB] = 0.0f;
+    for (size_t innerRowBOffset = 0; innerRowBOffset < BK;
+         innerRowBOffset += strideB) {
+      if ((tileOffset + innerRowBOffset + innerRowB) < N &&
+          (colBOffset + innerColB) < M)
+        B_s[innerRowBOffset + innerRowB][innerColB] =
+            B[(tileOffset + innerRowBOffset + innerRowB) * M + colBOffset +
+              innerColB];
+      else
+        B_s[innerRowBOffset + innerRowB][innerColB] = 0.0f;
+    }
 
     __syncthreads();
+
+    float A_reg[TN], B_reg[TM];
 
     // compute
     for (size_t k = 0; k < BK; ++k) {
       cnt = 0;
-      for (size_t innerRowCOffset = 0; innerRowCOffset < BN;
-           innerRowCOffset += CN) {
-        float A_s_tmp = A_s[innerRowCOffset + innerRowC][k];
-        for (size_t innerColCOffset = 0; innerColCOffset < BM;
-             innerColCOffset += CM) {
-          sums[cnt++] += A_s_tmp * B_s[k][innerColCOffset + innerColC];
+
+      // load value in registers
+      for (size_t i = 0; i < TN; ++i) {
+        A_reg[i] = A_s[i * CN + innerRowC][k];
+      }
+      for (size_t j = 0; j < TM; ++j) {
+        B_reg[j] = B_s[k][j * CM + innerColC];
+      }
+
+      for (size_t i = 0; i < TN; ++i) {
+        for (size_t j = 0; j < TM; ++j) {
+          sums[cnt++] += A_reg[i] * B_reg[j];
         }
       }
     }
@@ -259,8 +281,8 @@ int main() {
   const size_t CN = 32;
   const size_t CM = 32;
   const size_t BK = 8;
-  const size_t BN = CN * CM / BK;
-  const size_t BM = CN * CM / BK;
+  const size_t BN = 64;
+  const size_t BM = 64;
   const size_t TN = BN / CN;
   const size_t TM = BM / CM;
   start_timer(&t);
