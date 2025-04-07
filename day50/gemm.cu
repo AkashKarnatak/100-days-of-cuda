@@ -183,6 +183,7 @@ int main() {
   float *A, *B, *C_base, *C;
   float *A_d, *B_d, *C_base_d, *C_d;
   dim3 numThreads, numBlocks;
+  cudaError_t err;
 
   N = K = M = 4096;
 
@@ -214,6 +215,11 @@ int main() {
   matmul_naive_kernel<BLOCK_SIZE>
       <<<numBlocks, numThreads>>>(A_d, B_d, C_base_d, N, K, M);
   cudaDeviceSynchronize();
+  err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("CUDA kernel error: %s\n", cudaGetErrorString(err));
+    exit(1);
+  }
   cudaMemcpy(C_base, C_base_d, N * M * sizeof(float), cudaMemcpyDeviceToHost);
 
   cudaDeviceSynchronize();
@@ -223,6 +229,11 @@ int main() {
   matmul_naive_kernel<BLOCK_SIZE>
       <<<numBlocks, numThreads>>>(A_d, B_d, C_d, N, K, M);
   cudaDeviceSynchronize();
+  err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("CUDA kernel error: %s\n", cudaGetErrorString(err));
+    exit(1);
+  }
   stop_timer(&t);
   cudaMemcpy(C, C_d, N * M * sizeof(float), cudaMemcpyDeviceToHost);
   printf("Naive matmul kernel time: %f\n", time_diff(&t));
@@ -235,6 +246,11 @@ int main() {
   matmul_tiled_kernel<BLOCK_SIZE>
       <<<numBlocks, numThreads>>>(A_d, B_d, C_d, N, K, M);
   cudaDeviceSynchronize();
+  err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("CUDA kernel error: %s\n", cudaGetErrorString(err));
+    exit(1);
+  }
   stop_timer(&t);
   cudaMemcpy(C, C_d, N * M * sizeof(float), cudaMemcpyDeviceToHost);
   printf("Tiled matmul kernel time: %f\n", time_diff(&t));
@@ -243,7 +259,7 @@ int main() {
   cudaDeviceSynchronize();
   const size_t warpSize = 32;
   const size_t numWarps = 32;
-  const size_t BK = 1;
+  const size_t BK = 8;
   const size_t BN = numWarps * warpSize / BK;
   const size_t BM = numWarps * warpSize / BK;
   const size_t TN = BN / numWarps;
@@ -253,6 +269,11 @@ int main() {
   numBlocks = dim3(cdiv(M, BN), cdiv(N, BM));
   matmul_tiled_2d_kernel<BN, BK, BM, numWarps, TN, TM>
       <<<numBlocks, numThreads>>>(A_d, B_d, C_d, N, K, M);
+  err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("CUDA kernel error: %s\n", cudaGetErrorString(err));
+    exit(1);
+  }
   cudaDeviceSynchronize();
   stop_timer(&t);
   cudaMemcpy(C, C_d, N * M * sizeof(float), cudaMemcpyDeviceToHost);
