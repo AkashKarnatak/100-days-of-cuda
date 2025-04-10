@@ -111,7 +111,7 @@ int main() {
   float *in_d, *out_d;
   dim3 numThreads, numBlocks;
 
-  N = M = 4096;
+  N = M = 16384;
 
   in = (float *)malloc(N * M * sizeof(float));
   out_base = (float *)malloc(N * M * sizeof(float));
@@ -141,9 +141,9 @@ int main() {
       <<<numBlocks, numThreads>>>(in_d, out_d, N, M);
   CUDA_CHECK(cudaGetLastError());
   CUDA_CHECK(cudaDeviceSynchronize());
+  stop_timer(&t);
   CUDA_CHECK(
       cudaMemcpy(out, out_d, N * M * sizeof(float), cudaMemcpyDeviceToHost));
-  stop_timer(&t);
   printf("Transpose kernel with shared mem time: %f\n", time_diff(&t));
   printf("Match impl: %s\n\n",
          allclose(out_base, out, N, M) ? "true" : "false");

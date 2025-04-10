@@ -90,7 +90,7 @@ int main() {
   float *in_d, *out_d;
   dim3 numThreads, numBlocks;
 
-  N = M = 4096;
+  N = M = 16384;
 
   in = (float *)malloc(N * M * sizeof(float));
   out_base = (float *)malloc(N * M * sizeof(float));
@@ -111,19 +111,19 @@ int main() {
   CUDA_CHECK(cudaDeviceSynchronize());
   cudaMemset(out_d, 0, N * M * sizeof(float));
   start_timer(&t);
-  const size_t BN = 32;
-  const size_t BM = 32;
+  const size_t BN = 16;
+  const size_t BM = 16;
   const size_t CN = 8;
-  const size_t CM = 32;
+  const size_t CM = 16;
   numThreads = dim3(CM, CN);
   numBlocks = dim3(cdiv(M, BM), cdiv(N, BN));
   transpose_coarse_kernel<BN, BM, CN, CM>
       <<<numBlocks, numThreads>>>(in_d, out_d, N, M);
   CUDA_CHECK(cudaGetLastError());
   CUDA_CHECK(cudaDeviceSynchronize());
+  stop_timer(&t);
   CUDA_CHECK(
       cudaMemcpy(out, out_d, N * M * sizeof(float), cudaMemcpyDeviceToHost));
-  stop_timer(&t);
   printf("Thread coarsened transpose kernel time: %f\n", time_diff(&t));
   printf("Match impl: %s\n\n",
          allclose(out_base, out, N, M) ? "true" : "false");
