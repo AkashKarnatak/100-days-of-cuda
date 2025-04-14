@@ -424,10 +424,16 @@ __global__ void matmul_tiled_vector_kernel2(float *A, float *B, float *C,
 }
 
 template <const size_t BN, const size_t BK, const size_t BM, const size_t TN,
-          const size_t TM, const size_t WN, const size_t WM>
+          const size_t TM, const size_t WITERN, const size_t WITERM,
+          const size_t WCOL>
 __global__ void matmul_tiled_warptile_kernel(float *A, float *B, float *C,
                                              size_t N, size_t K, size_t M) {
   const size_t WARPSIZE = 32;
+  const size_t WSUBN = WITERN * TN;
+  const size_t WSUBM = WITERM * TM;
+  const size_t WN = WSUBN * 32 / WCOL;
+  const size_t WM = WSUBM * WCOL;
+
   const size_t rowAOffset = blockIdx.y * BN;
   const size_t colBOffset = blockIdx.x * BM;
   const size_t rowCOffset = rowAOffset;
@@ -439,24 +445,22 @@ __global__ void matmul_tiled_warptile_kernel(float *A, float *B, float *C,
   size_t innerColB = threadIdx.x % (BM / 4);
   size_t innerRowB = threadIdx.x / (BM / 4);
 
-  size_t WSUBN = TN;
-  size_t WSUBM = TM;
   size_t laneIdx = threadIdx.x % WARPSIZE;
   size_t warpIdx = threadIdx.x / WARPSIZE;
-  size_t innerWarpColOffset = (laneIdx % (WM / WSUBM)) * WSUBM;
-  size_t innerWarpRowOffset = (laneIdx / (WM / WSUBM)) * WSUBN;
+  size_t innerWarpColOffset = (laneIdx % WCOL) * WSUBM;
+  size_t innerWarpRowOffset = (laneIdx / WCOL) * WSUBN;
   size_t warpColOffset = warpIdx % (BM / WM) * WM;
   size_t warpRowOffset = warpIdx / (BM / WM) * WN;
 
-  size_t numThreads = (BN * BM) / (TN * TM);
+  size_t numThreads = (BN * BM) / (WSUBN * WSUBM);
   size_t strideA = numThreads / (BK / 4);
   size_t strideB = numThreads / (BM / 4);
 
   __shared__ float A_s[BK][BN];
   __shared__ float B_s[BK][BM + 5];
 
-  float sums[TN * TM] = {0};
-  float A_reg[TN], B_reg[TM];
+  float sums[WSUBN * WSUBM] = {0};
+  float A_reg[WSUBN], B_reg[WSUBM];
 
   for (size_t tileOffset = 0; tileOffset < K; tileOffset += BK) {
 
@@ -507,16 +511,31 @@ __global__ void matmul_tiled_warptile_kernel(float *A, float *B, float *C,
       cnt = 0;
 
       // load value in registers
-      for (size_t i = 0; i < TN; ++i) {
-        A_reg[i] = A_s[k][warpRowOffset + innerWarpRowOffset + i];
+      for (size_t wSubRowOffset = 0; wSubRowOffset < WSUBN;
+           wSubRowOffset += TN) {
+        for (size_t i = 0; i < TN; ++i) {
+          A_reg[wSubRowOffset + i] =
+              A_s[k][warpRowOffset + innerWarpRowOffset + wSubRowOffset + i];
+        }
       }
-      for (size_t j = 0; j < TM; ++j) {
-        B_reg[j] = B_s[k][warpColOffset + innerWarpColOffset + j];
+      for (size_t wSubColOffset = 0; wSubColOffset < WSUBM;
+           wSubColOffset += TM) {
+        for (size_t j = 0; j < TM; ++j) {
+          B_reg[wSubColOffset + j] =
+              B_s[k][warpColOffset + innerWarpColOffset + wSubColOffset + j];
+        }
       }
 
-      for (size_t i = 0; i < TN; ++i) {
-        for (size_t j = 0; j < TM; ++j) {
-          sums[cnt++] += A_reg[i] * B_reg[j];
+      for (size_t wSubRowOffset = 0; wSubRowOffset < WSUBN;
+           wSubRowOffset += TN) {
+        for (size_t wSubColOffset = 0; wSubColOffset < WSUBM;
+             wSubColOffset += TM) {
+          for (size_t i = 0; i < TN; ++i) {
+            for (size_t j = 0; j < TM; ++j) {
+              sums[cnt++] +=
+                  A_reg[wSubRowOffset + i] * B_reg[wSubColOffset + j];
+            }
+          }
         }
       }
     }
@@ -524,14 +543,21 @@ __global__ void matmul_tiled_warptile_kernel(float *A, float *B, float *C,
   }
 
   cnt = 0;
-  for (size_t i = 0; i < TN; ++i) {
-    for (size_t j = 0; j < TM; ++j) {
-      size_t innerRowC = warpRowOffset + innerWarpRowOffset + i;
-      size_t innerColC = warpColOffset + innerWarpColOffset + j;
-      if ((rowCOffset + innerRowC) < N && (colCOffset + innerColC) < M) {
-        C[(rowCOffset + innerRowC) * M + colCOffset + innerColC] = sums[cnt];
+  for (size_t wSubRowOffset = 0; wSubRowOffset < WSUBN; wSubRowOffset += TN) {
+    for (size_t wSubColOffset = 0; wSubColOffset < WSUBM; wSubColOffset += TM) {
+      for (size_t i = 0; i < TN; ++i) {
+        for (size_t j = 0; j < TM; ++j) {
+          size_t innerRowC =
+              warpRowOffset + innerWarpRowOffset + wSubRowOffset + i;
+          size_t innerColC =
+              warpColOffset + innerWarpColOffset + wSubColOffset + j;
+          if ((rowCOffset + innerRowC) < N && (colCOffset + innerColC) < M) {
+            C[(rowCOffset + innerRowC) * M + colCOffset + innerColC] =
+                sums[cnt];
+          }
+          ++cnt;
+        }
       }
-      ++cnt;
     }
   }
 }
@@ -684,18 +710,21 @@ int main() {
   // vectorized block tiled matmul kernel
   CUDA_CHECK(cudaDeviceSynchronize());
   cudaMemset(C_d, 0, N * M * sizeof(float));
-  const size_t TN = 8;
-  const size_t TM = 4;
-  const size_t BK = 16;
-  const size_t BN = 128;
-  const size_t BM = 64;
-  const size_t WN = 32;
-  const size_t WM = 32;
-  numThreads = dim3((BN * BM) / (TN * TM));
+  const size_t TN = 2;
+  const size_t TM = 2;
+  const size_t BK = 8;
+  const size_t BN = 32;
+  const size_t BM = 32;
+  const size_t WITERN = 2;
+  const size_t WITERM = 2;
+  const size_t WCOL = 4;
+  assert(BN * BM > 32 * TN * TM * WITERN * WITERM); // have atleast 1 warp
+  numThreads = dim3((BN * BM) / (TN * TM * WITERN * WITERM));
   numBlocks = dim3(cdiv(M, BM), cdiv(N, BN));
-  BENCHMARK_CUDA_KERNEL("vectorized block tiled matmul kernel", 5, 20,
-                        (matmul_tiled_warptile_kernel<BN, BK, BM, TN, TM, WN, WM>
-                         <<<numBlocks, numThreads>>>(A_d, B_d, C_d, N, K, M)));
+  BENCHMARK_CUDA_KERNEL(
+      "vectorized block tiled matmul kernel", 5, 20,
+      (matmul_tiled_warptile_kernel<BN, BK, BM, TN, TM, WITERN, WITERN, WCOL>
+       <<<numBlocks, numThreads>>>(A_d, B_d, C_d, N, K, M)));
   CUDA_CHECK(cudaMemcpy(C, C_d, N * M * sizeof(float), cudaMemcpyDeviceToHost));
   printf("Match impl: %s\n\n", allclose(C_base, C, N, M) ? "true" : "false");
 
